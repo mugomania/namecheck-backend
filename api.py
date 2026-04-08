@@ -1,4 +1,6 @@
 import os
+import uuid
+import random
 from fastapi import FastAPI, Query, Header, HTTPException, Depends, Request
 from fastapi.responses import JSONResponse
 from supabase import create_client
@@ -7,6 +9,7 @@ from pydantic import BaseModel
 from typing import List, Optional
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
+from datetime import datetime
 
 load_dotenv()
 
@@ -25,6 +28,12 @@ class BulkRequestItem(BaseModel):
 
 class BulkRequest(BaseModel):
     requests: List[BulkRequestItem]
+
+# ---------- Payment models ----------
+class PaymentInitRequest(BaseModel):
+    name_count: int
+    is_bulk: bool = False
+    request_payload: dict   # stores the actual search parameters
 
 # ---------- API key store (using environment variables for production) ----------
 API_KEYS = {
@@ -57,6 +66,117 @@ async def cors_middleware(request, call_next):
     response = await call_next(request)
     return add_cors_headers(response)
 
+# ---------- Pricing helper ----------
+def calculate_amount(name_count: int, is_bulk: bool) -> int:
+    if not is_bulk:
+        return name_count * 50   # 50 KES per single search
+    # Bulk discounts
+    if name_count <= 10:
+        return name_count * 45
+    elif name_count <= 50:
+        return name_count * 40
+    else:
+        return name_count * 35
+
+# ---------- Reusable search function ----------
+async def perform_search(payload: dict):
+    """Execute search based on payload (either single or bulk)"""
+    if payload.get("is_bulk"):
+        # Bulk search
+        requests = payload["requests"]
+        results = []
+        for req in requests:
+            column = "old_name" if req["direction"] == "forward" else "new_name"
+            query = supabase.table("name_changes").select("*")
+            if req["fuzzy"]:
+                query = query.ilike(column, f"%{req['name']}%")
+            else:
+                query = query.eq(column, req["name"])
+            data = query.limit(20).execute().data
+            results.append({
+                "input_name": req["name"],
+                "direction": req["direction"],
+                "status": "found" if data else "not_found",
+                "matches": data
+            })
+        return {
+            "results": results,
+            "summary": {
+                "total": len(results),
+                "found": sum(1 for r in results if r["status"] == "found"),
+                "not_found": sum(1 for r in results if r["status"] == "not_found")
+            }
+        }
+    else:
+        # Single search
+        name = payload["name"]
+        direction = payload.get("direction", "forward")
+        fuzzy = payload.get("fuzzy", True)
+        column = "old_name" if direction == "forward" else "new_name"
+        query = supabase.table("name_changes").select("*")
+        if fuzzy:
+            query = query.ilike(column, f"%{name}%")
+        else:
+            query = query.eq(column, name)
+        data = query.limit(20).execute().data
+        return {"status": "found" if data else "not_found", "data": data}
+
+# ---------- Payment endpoints ----------
+@app.post("/payment/initiate")
+async def initiate_payment(req: PaymentInitRequest):
+    # Generate a unique internal transaction ID
+    tx_id = f"NC{int(datetime.now().timestamp())}{random.randint(100,999)}"
+    amount = calculate_amount(req.name_count, req.is_bulk)
+    # Fixed Paybill and account number
+    paybill = "400200"
+    account_number = "01101252731001"
+    
+    # Insert payment record
+    payment_data = {
+        "transaction_id": tx_id,
+        "amount": amount,
+        "name_count": req.name_count,
+        "is_bulk": req.is_bulk,
+        "request_payload": req.request_payload,
+        "status": "pending"
+    }
+    result = supabase.table("payments").insert(payment_data).execute()
+    if not result.data:
+        raise HTTPException(status_code=500, detail="Failed to create payment record")
+    
+    return {
+        "transaction_id": tx_id,   # internal, not shown to user
+        "amount": amount,
+        "paybill": paybill,
+        "account_number": account_number
+    }
+
+@app.post("/payment/mark-paid")
+async def mark_paid(transaction_id: str, admin_token: str = Header(...)):
+    if admin_token != os.getenv("ADMIN_TOKEN"):
+        raise HTTPException(status_code=401, detail="Invalid admin token")
+    update_data = {"status": "paid", "paid_at": datetime.utcnow().isoformat()}
+    result = supabase.table("payments").update(update_data).eq("transaction_id", transaction_id).execute()
+    if not result.data:
+        raise HTTPException(status_code=404, detail="Payment not found")
+    return {"status": "ok"}
+
+@app.get("/payment/status/{transaction_id}")
+async def get_payment_status(transaction_id: str):
+    result = supabase.table("payments").select("status, request_payload, results_cache").eq("transaction_id", transaction_id).execute()
+    if not result.data:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+    payment = result.data[0]
+    if payment["status"] == "paid":
+        if payment.get("results_cache"):
+            results = payment["results_cache"]
+        else:
+            payload = payment["request_payload"]
+            results = await perform_search(payload)
+            supabase.table("payments").update({"results_cache": results}).eq("transaction_id", transaction_id).execute()
+        return {"status": "paid", "results": results}
+    return {"status": payment["status"], "results": None}
+
 # ---------- Existing endpoints ----------
 @app.get("/verify")
 async def verify_name(
@@ -77,7 +197,7 @@ async def verify_name(
 async def health():
     return {"status": "ok"}
 
-# ---------- New bulk endpoint ----------
+# ---------- Bulk endpoint (for API key users) ----------
 @app.post("/verify/bulk")
 @limiter.limit("100/minute")
 async def verify_bulk(
