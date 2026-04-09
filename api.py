@@ -20,6 +20,13 @@ supabase = create_client(
     os.getenv("SUPABASE_KEY")
 )
 
+@app.get("/debug/routes")
+async def debug_routes():
+    routes = []
+    for route in app.routes:
+        routes.append({"path": route.path, "methods": list(route.methods)})
+    return routes
+
 # ---------- Bulk query models ----------
 class BulkRequestItem(BaseModel):
     name: str
@@ -33,7 +40,7 @@ class BulkRequest(BaseModel):
 class PaymentInitRequest(BaseModel):
     name_count: int
     is_bulk: bool = False
-    request_payload: dict   # stores the actual search parameters
+    request_payload: dict
 
 # ---------- API key store (using environment variables for production) ----------
 API_KEYS = {
@@ -69,8 +76,7 @@ async def cors_middleware(request, call_next):
 # ---------- Pricing helper ----------
 def calculate_amount(name_count: int, is_bulk: bool) -> int:
     if not is_bulk:
-        return name_count * 50   # 50 KES per single search
-    # Bulk discounts
+        return name_count * 50
     if name_count <= 10:
         return name_count * 45
     elif name_count <= 50:
@@ -80,9 +86,7 @@ def calculate_amount(name_count: int, is_bulk: bool) -> int:
 
 # ---------- Reusable search function ----------
 async def perform_search(payload: dict):
-    """Execute search based on payload (either single or bulk)"""
     if payload.get("is_bulk"):
-        # Bulk search
         requests = payload["requests"]
         results = []
         for req in requests:
@@ -108,7 +112,6 @@ async def perform_search(payload: dict):
             }
         }
     else:
-        # Single search
         name = payload["name"]
         direction = payload.get("direction", "forward")
         fuzzy = payload.get("fuzzy", True)
@@ -124,14 +127,11 @@ async def perform_search(payload: dict):
 # ---------- Payment endpoints ----------
 @app.post("/payment/initiate")
 async def initiate_payment(req: PaymentInitRequest):
-    # Generate a unique internal transaction ID
     tx_id = f"NC{int(datetime.now().timestamp())}{random.randint(100,999)}"
     amount = calculate_amount(req.name_count, req.is_bulk)
-    # Fixed Paybill and account number
     paybill = "400200"
     account_number = "01101252731001"
     
-    # Insert payment record
     payment_data = {
         "transaction_id": tx_id,
         "amount": amount,
@@ -145,7 +145,7 @@ async def initiate_payment(req: PaymentInitRequest):
         raise HTTPException(status_code=500, detail="Failed to create payment record")
     
     return {
-        "transaction_id": tx_id,   # internal, not shown to user
+        "transaction_id": tx_id,
         "amount": amount,
         "paybill": paybill,
         "account_number": account_number
@@ -197,7 +197,6 @@ async def verify_name(
 async def health():
     return {"status": "ok"}
 
-# ---------- Bulk endpoint (for API key users) ----------
 @app.post("/verify/bulk")
 @limiter.limit("100/minute")
 async def verify_bulk(
@@ -227,7 +226,4 @@ async def verify_bulk(
             "found": sum(1 for r in results if r["status"] == "found"),
             "not_found": sum(1 for r in results if r["status"] == "not_found")
         }
-    }"" 
-"@app.get(\"/debug/routes\")" 
-"async def debug_routes():" 
-"    return [{\"path\": route.path, \"methods\": list(route.methods)} for route in app.routes]" 
+    }
