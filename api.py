@@ -227,4 +227,7 @@ async def verify_bulk(
             "found": sum(1 for r in results if r["status"] == "found"),
             "not_found": sum(1 for r in results if r["status"] == "not_found")
         }
-    }
+    }"" 
+"@app.get(\"/debug/routes\")" 
+"async def debug_routes():" 
+"    return [{\"path\": route.path, \"methods\": list(route.methods)} for route in app.routes]" 
