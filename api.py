@@ -1,6 +1,7 @@
 import os
 import uuid
 import random
+import httpx  # pip install httpx
 from fastapi import FastAPI, Query, Header, HTTPException, Depends, Request
 from fastapi.responses import JSONResponse
 from supabase import create_client
@@ -127,6 +128,35 @@ async def perform_search(payload: dict):
         data = query.limit(20).execute().data
         return {"status": "found" if data else "not_found", "data": data}
 
+# ---------- Telegram alert ----------
+async def send_telegram_alert(transaction_id: str, amount: int, name_count: int, is_bulk: bool):
+    bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+    if not bot_token or not chat_id:
+        print("Telegram credentials missing. Skipping alert.")
+        return
+    message = f"""🚨 *New Payment Pending Verification!*
+    
+Transaction ID: `{transaction_id}`
+Amount: KES {amount}
+Names: {name_count}
+Bulk: {'Yes' if is_bulk else 'No'}
+
+Please check M-Pesa statement and mark as paid in the admin panel.
+"""
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": message,
+        "parse_mode": "Markdown"
+    }
+    async with httpx.AsyncClient() as client:
+        try:
+            await client.post(url, json=payload)
+            print(f"Telegram alert sent for {transaction_id}")
+        except Exception as e:
+            print(f"Telegram alert failed: {e}")
+
 # ---------- Payment endpoints ----------
 @app.post("/payment/initiate")
 async def initiate_payment(req: PaymentInitRequest):
@@ -153,6 +183,22 @@ async def initiate_payment(req: PaymentInitRequest):
         "paybill": paybill,
         "account_number": account_number
     }
+
+@app.post("/payment/notify-admin")
+async def notify_admin(transaction_id: str):
+    # Fetch payment details
+    result = supabase.table("payments").select("transaction_id, amount, name_count, is_bulk, created_at").eq("transaction_id", transaction_id).execute()
+    if not result.data:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+    payment = result.data[0]
+    # Send Telegram alert
+    await send_telegram_alert(
+        transaction_id=payment["transaction_id"],
+        amount=payment["amount"],
+        name_count=payment["name_count"],
+        is_bulk=payment["is_bulk"]
+    )
+    return {"status": "notified"}
 
 @app.post("/payment/mark-paid")
 async def mark_paid(transaction_id: str, admin_token: str = Header(...)):
