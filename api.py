@@ -86,7 +86,9 @@ def calculate_amount(name_count: int, is_bulk: bool) -> int:
 
 # ---------- Reusable search function ----------
 async def perform_search(payload: dict):
-    if payload.get("is_bulk"):
+    # Detect bulk by checking for "requests" key
+    if "requests" in payload:
+        # Bulk search
         requests = payload["requests"]
         results = []
         for req in requests:
@@ -112,6 +114,7 @@ async def perform_search(payload: dict):
             }
         }
     else:
+        # Single search
         name = payload["name"]
         direction = payload.get("direction", "forward")
         fuzzy = payload.get("fuzzy", True)
