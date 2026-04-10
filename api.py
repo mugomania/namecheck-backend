@@ -135,6 +135,7 @@ async def send_telegram_alert(transaction_id: str, amount: int, name_count: int,
     if not bot_token or not chat_id:
         print("Telegram credentials missing. Skipping alert.")
         return
+    admin_link = "https://namecheck.co.ke/admin/payments"
     message = f"""🚨 *New Payment Pending Verification!*
     
 Transaction ID: `{transaction_id}`
@@ -142,13 +143,14 @@ Amount: KES {amount}
 Names: {name_count}
 Bulk: {'Yes' if is_bulk else 'No'}
 
-Please check M-Pesa statement and mark as paid in the admin panel.
+👉 [Go to Admin Panel]({admin_link}) to mark as paid.
 """
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     payload = {
         "chat_id": chat_id,
         "text": message,
-        "parse_mode": "Markdown"
+        "parse_mode": "Markdown",
+        "disable_web_page_preview": False
     }
     async with httpx.AsyncClient() as client:
         try:
