@@ -2,7 +2,10 @@ import os
 import uuid
 import random
 import httpx
-from fastapi import FastAPI, Query, Header, HTTPException, Depends, Request
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from fastapi import FastAPI, Query, Header, HTTPException, Depends, Request, Form
 from fastapi.responses import JSONResponse
 from supabase import create_client
 from dotenv import load_dotenv
@@ -293,6 +296,43 @@ async def api_root():
             "GET /api/health - Service health check (public)"
         ]
     }
+
+# ---------- Contact Form Endpoint ----------
+@app.post("/api/contact")
+async def contact_form(
+    name: str = Form(...),
+    email: str = Form(...),
+    message: str = Form(...)
+):
+    # Use HOSTAFRICA SMTP settings (or environment overrides)
+    smtp_server = os.getenv("SMTP_SERVER", "smtp.hmailplus.com")
+    smtp_port = int(os.getenv("SMTP_PORT", 587))
+    smtp_user = os.getenv("SMTP_USER", "support@namecheck.co.ke")
+    smtp_password = os.getenv("SMTP_PASSWORD")
+    recipient = os.getenv("CONTACT_RECIPIENT", smtp_user)
+
+    if not smtp_password:
+        # Fallback: log to console (for development)
+        print(f"Contact form: {name} <{email}>: {message}")
+        return {"status": "received (email not configured)"}
+
+    try:
+        msg = MIMEMultipart()
+        msg["From"] = smtp_user
+        msg["To"] = recipient
+        msg["Subject"] = f"Contact from {name} via NameCheck Kenya"
+        body = f"Name: {name}\nEmail: {email}\n\nMessage:\n{message}"
+        msg.attach(MIMEText(body, "plain"))
+
+        with smtplib.SMTP(smtp_server, smtp_port) as server:
+            server.starttls()
+            server.login(smtp_user, smtp_password)
+            server.send_message(msg)
+
+        return {"status": "sent"}
+    except Exception as e:
+        print(f"Email error: {e}")
+        return {"status": "error", "detail": str(e)}
 
 # ---------- Admin Endpoints for API Key Management ----------
 @app.post("/admin/api-keys")
