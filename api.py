@@ -297,42 +297,57 @@ async def api_root():
         ]
     }
 
-# ---------- Contact Form Endpoint ----------
+# ---------- Contact Form Endpoint (with Supabase fallback) ----------
 @app.post("/api/contact")
 async def contact_form(
     name: str = Form(...),
     email: str = Form(...),
     message: str = Form(...)
 ):
-    # Use HOSTAFRICA SMTP settings (or environment overrides)
+    # 1. Always store the message in Supabase (fallback)
+    stored = False
+    try:
+        supabase.table("contact_messages").insert({
+            "name": name,
+            "email": email,
+            "message": message,
+            "created_at": datetime.utcnow().isoformat()
+        }).execute()
+        stored = True
+    except Exception as e:
+        print(f"Supabase insert error: {e}")
+
+    # 2. Try to send email using HOSTAFRICA SMTP
     smtp_server = os.getenv("SMTP_SERVER", "smtp.hmailplus.com")
     smtp_port = int(os.getenv("SMTP_PORT", 587))
     smtp_user = os.getenv("SMTP_USER", "support@namecheck.co.ke")
     smtp_password = os.getenv("SMTP_PASSWORD")
     recipient = os.getenv("CONTACT_RECIPIENT", smtp_user)
 
-    if not smtp_password:
-        # Fallback: log to console (for development)
-        print(f"Contact form: {name} <{email}>: {message}")
-        return {"status": "received (email not configured)"}
+    email_sent = False
+    if smtp_password:
+        try:
+            msg = MIMEMultipart()
+            msg["From"] = smtp_user
+            msg["To"] = recipient
+            msg["Subject"] = f"Contact from {name} via NameCheck Kenya"
+            body = f"Name: {name}\nEmail: {email}\n\nMessage:\n{message}"
+            msg.attach(MIMEText(body, "plain"))
 
-    try:
-        msg = MIMEMultipart()
-        msg["From"] = smtp_user
-        msg["To"] = recipient
-        msg["Subject"] = f"Contact from {name} via NameCheck Kenya"
-        body = f"Name: {name}\nEmail: {email}\n\nMessage:\n{message}"
-        msg.attach(MIMEText(body, "plain"))
+            with smtplib.SMTP(smtp_server, smtp_port) as server:
+                server.starttls()
+                server.login(smtp_user, smtp_password)
+                server.send_message(msg)
+            email_sent = True
+        except Exception as e:
+            print(f"Email error: {e}")
+    else:
+        print("SMTP_PASSWORD not set, email not sent")
 
-        with smtplib.SMTP(smtp_server, smtp_port) as server:
-            server.starttls()
-            server.login(smtp_user, smtp_password)
-            server.send_message(msg)
-
+    if email_sent or stored:
         return {"status": "sent"}
-    except Exception as e:
-        print(f"Email error: {e}")
-        return {"status": "error", "detail": str(e)}
+    else:
+        return {"status": "error", "detail": "Could not deliver message"}
 
 # ---------- Admin Endpoints for API Key Management ----------
 @app.post("/admin/api-keys")
