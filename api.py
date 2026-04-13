@@ -280,19 +280,17 @@ async def verify_name(
 async def health():
     return {"status": "ok"}
 
-# ---------- API Root Endpoint (welcome message) ----------
+# ---------- API Root Endpoint (welcome message - only relevant endpoints for API key holders) ----------
 @app.get("/api")
 async def api_root():
     return {
         "message": "NameCheck Kenya API",
         "documentation": "https://namecheck.co.ke/developers",
+        "authentication": "X-API-Key header required for all endpoints below",
         "endpoints": [
-            "GET /api/health",
-            "POST /api/verify/bulk",
-            "GET /api/enterprise/usage",
-            "POST /api/payment/initiate",
-            "GET /api/verify (public, but requires payment via web)",
-            "GET /api/payment/status/{transaction_id}"
+            "POST /api/verify/bulk - Verify multiple names (requires API key)",
+            "GET /api/enterprise/usage - Check remaining quota (requires API key)",
+            "GET /api/health - Service health check (public)"
         ]
     }
 
