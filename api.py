@@ -3,6 +3,7 @@ import uuid
 import random
 import httpx
 import smtplib
+import socket
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from fastapi import FastAPI, Query, Header, HTTPException, Depends, Request, Form
@@ -297,27 +298,28 @@ async def api_root():
         ]
     }
 
-# ---------- Contact Form Endpoint (with Supabase fallback) ----------
+# ---------- Contact Form Endpoint (with Supabase fallback and robust error handling) ----------
 @app.post("/api/contact")
 async def contact_form(
     name: str = Form(...),
     email: str = Form(...),
     message: str = Form(...)
 ):
-    # 1. Always store the message in Supabase (fallback)
+    # Always store in Supabase first
     stored = False
     try:
-        supabase.table("contact_messages").insert({
+        result = supabase.table("contact_messages").insert({
             "name": name,
             "email": email,
             "message": message,
             "created_at": datetime.utcnow().isoformat()
         }).execute()
         stored = True
+        print(f"Contact message stored in Supabase: {name} <{email}>")
     except Exception as e:
         print(f"Supabase insert error: {e}")
 
-    # 2. Try to send email using HOSTAFRICA SMTP
+    # Attempt to send email (non-blocking with timeout)
     smtp_server = os.getenv("SMTP_SERVER", "smtp.hmailplus.com")
     smtp_port = int(os.getenv("SMTP_PORT", 587))
     smtp_user = os.getenv("SMTP_USER", "support@namecheck.co.ke")
@@ -327,6 +329,9 @@ async def contact_form(
     email_sent = False
     if smtp_password:
         try:
+            # Set timeout for socket operations
+            old_timeout = socket.getdefaulttimeout()
+            socket.setdefaulttimeout(10.0)  # 10 seconds timeout
             msg = MIMEMultipart()
             msg["From"] = smtp_user
             msg["To"] = recipient
@@ -335,19 +340,26 @@ async def contact_form(
             msg.attach(MIMEText(body, "plain"))
 
             with smtplib.SMTP(smtp_server, smtp_port) as server:
+                server.set_debuglevel(0)  # set to 1 for verbose logs in development
                 server.starttls()
                 server.login(smtp_user, smtp_password)
                 server.send_message(msg)
             email_sent = True
+            print(f"Email sent to {recipient}")
+            socket.setdefaulttimeout(old_timeout)
         except Exception as e:
             print(f"Email error: {e}")
+            email_sent = False
     else:
-        print("SMTP_PASSWORD not set, email not sent")
+        print("SMTP_PASSWORD not set – email not sent")
 
-    if email_sent or stored:
+    # Return appropriate response
+    if email_sent:
         return {"status": "sent"}
+    elif stored:
+        return {"status": "stored_only", "detail": "Message saved but email could not be sent"}
     else:
-        return {"status": "error", "detail": "Could not deliver message"}
+        return {"status": "error", "detail": "Could not store message or send email"}
 
 # ---------- Admin Endpoints for API Key Management ----------
 @app.post("/admin/api-keys")
