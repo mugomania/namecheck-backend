@@ -326,7 +326,7 @@ async def api_root():
         ]
     }
 
-# ---------- Contact Form Endpoint (with Telegram alert + email) ----------
+# ---------- Contact Form Endpoint (with Telegram alert + email + detailed logging) ----------
 @app.post("/api/contact")
 async def contact_form(
     name: str = Form(...),
@@ -343,22 +343,26 @@ async def contact_form(
             "created_at": datetime.utcnow().isoformat()
         }).execute()
         stored = True
-        print(f"Contact message stored in Supabase: {name} <{email}>")
+        print(f"✓ Contact message stored in Supabase: {name} <{email}>")
     except Exception as e:
-        print(f"Supabase insert error: {e}")
+        print(f"✗ Supabase insert error: {e}")
 
-    # 2. Send Telegram alert (always, even if email fails)
+    # 2. Send Telegram alert
     await send_contact_telegram_alert(name, email, message)
 
-    # 3. Attempt to send email via HOSTAFRICA SMTP
+    # 3. Attempt to send email with detailed logging
     smtp_server = os.getenv("SMTP_SERVER", "smtp.hmailplus.com")
     smtp_port = int(os.getenv("SMTP_PORT", 587))
     smtp_user = os.getenv("SMTP_USER", "support@namecheck.co.ke")
     smtp_password = os.getenv("SMTP_PASSWORD")
     recipient = os.getenv("CONTACT_RECIPIENT", smtp_user)
 
+    print(f"📧 SMTP config: server={smtp_server}, port={smtp_port}, user={smtp_user}, recipient={recipient}, password={'SET' if smtp_password else 'MISSING'}")
+
     email_sent = False
-    if smtp_password:
+    if not smtp_password:
+        print("✗ SMTP_PASSWORD missing – cannot send email")
+    else:
         try:
             old_timeout = socket.getdefaulttimeout()
             socket.setdefaulttimeout(10.0)
@@ -369,19 +373,23 @@ async def contact_form(
             body = f"Name: {name}\nEmail: {email}\n\nMessage:\n{message}"
             msg.attach(MIMEText(body, "plain"))
 
+            print(f"🔌 Connecting to {smtp_server}:{smtp_port}...")
             with smtplib.SMTP(smtp_server, smtp_port) as server:
-                server.set_debuglevel(0)
+                server.set_debuglevel(1)  # Verbose SMTP logs
+                print("🔒 Starting TLS...")
                 server.starttls()
+                print("🔑 Logging in...")
                 server.login(smtp_user, smtp_password)
+                print("📤 Sending email...")
                 server.send_message(msg)
             email_sent = True
-            print(f"Email sent to {recipient}")
+            print("✅ Email sent successfully")
             socket.setdefaulttimeout(old_timeout)
         except Exception as e:
-            print(f"Email error: {e}")
+            print(f"❌ Email error: {e}")
+            import traceback
+            traceback.print_exc()
             email_sent = False
-    else:
-        print("SMTP_PASSWORD not set – email not sent")
 
     # 4. Return appropriate response
     if email_sent:
