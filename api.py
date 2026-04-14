@@ -113,7 +113,7 @@ async def perform_search(payload: dict):
             item.pop("confidence", None)
         return {"status": "found" if data else "not_found", "data": data}
 
-# ---------- Telegram Alert ----------
+# ---------- Telegram Alert for Payment ----------
 async def send_telegram_alert(transaction_id: str, amount: int, name_count: int, tier: str):
     bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
@@ -143,6 +143,34 @@ Tier: {tier}
             print(f"Telegram alert sent for {transaction_id}")
         except Exception as e:
             print(f"Telegram alert failed: {e}")
+
+# ---------- Telegram Alert for Contact Form ----------
+async def send_contact_telegram_alert(name: str, email: str, message: str):
+    bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+    if not bot_token or not chat_id:
+        print("Telegram credentials missing. Skipping contact alert.")
+        return
+    telegram_message = f"""📬 *New Contact Message*
+    
+*Name:* {name}
+*Email:* {email}
+*Message:*
+{message}
+"""
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": telegram_message,
+        "parse_mode": "Markdown",
+        "disable_web_page_preview": True
+    }
+    async with httpx.AsyncClient() as client:
+        try:
+            await client.post(url, json=payload)
+            print(f"Telegram contact alert sent for {email}")
+        except Exception as e:
+            print(f"Telegram contact alert failed: {e}")
 
 # ---------- Payment Endpoints ----------
 @app.post("/payment/initiate")
@@ -298,17 +326,17 @@ async def api_root():
         ]
     }
 
-# ---------- Contact Form Endpoint (with Supabase fallback and robust error handling) ----------
+# ---------- Contact Form Endpoint (with Telegram alert + email) ----------
 @app.post("/api/contact")
 async def contact_form(
     name: str = Form(...),
     email: str = Form(...),
     message: str = Form(...)
 ):
-    # Always store in Supabase first
+    # 1. Store in Supabase
     stored = False
     try:
-        result = supabase.table("contact_messages").insert({
+        supabase.table("contact_messages").insert({
             "name": name,
             "email": email,
             "message": message,
@@ -319,7 +347,10 @@ async def contact_form(
     except Exception as e:
         print(f"Supabase insert error: {e}")
 
-    # Attempt to send email (non-blocking with timeout)
+    # 2. Send Telegram alert (always, even if email fails)
+    await send_contact_telegram_alert(name, email, message)
+
+    # 3. Attempt to send email via HOSTAFRICA SMTP
     smtp_server = os.getenv("SMTP_SERVER", "smtp.hmailplus.com")
     smtp_port = int(os.getenv("SMTP_PORT", 587))
     smtp_user = os.getenv("SMTP_USER", "support@namecheck.co.ke")
@@ -329,9 +360,8 @@ async def contact_form(
     email_sent = False
     if smtp_password:
         try:
-            # Set timeout for socket operations
             old_timeout = socket.getdefaulttimeout()
-            socket.setdefaulttimeout(10.0)  # 10 seconds timeout
+            socket.setdefaulttimeout(10.0)
             msg = MIMEMultipart()
             msg["From"] = smtp_user
             msg["To"] = recipient
@@ -340,7 +370,7 @@ async def contact_form(
             msg.attach(MIMEText(body, "plain"))
 
             with smtplib.SMTP(smtp_server, smtp_port) as server:
-                server.set_debuglevel(0)  # set to 1 for verbose logs in development
+                server.set_debuglevel(0)
                 server.starttls()
                 server.login(smtp_user, smtp_password)
                 server.send_message(msg)
@@ -353,7 +383,7 @@ async def contact_form(
     else:
         print("SMTP_PASSWORD not set – email not sent")
 
-    # Return appropriate response
+    # 4. Return appropriate response
     if email_sent:
         return {"status": "sent"}
     elif stored:
